@@ -223,6 +223,9 @@ static inline void writeTPIDRPRW(word_t reg)
     asm volatile("mcr p15, 0, %0, c13, c0, 4" :: "r"(reg));
 }
 
+
+#ifdef CONFIG_ARM_HYPERVISOR_SUPPORT
+
 static inline word_t readTPIDRPRW(void)
 {
     word_t reg;
@@ -230,12 +233,14 @@ static inline word_t readTPIDRPRW(void)
     return reg;
 }
 
+#endif
+
 static void arm_save_thread_id(tcb_t *thread)
 {
     /* TPIDRURW is writeable from EL0 but not with globals frame. */
     setRegister(thread, TPIDRURW, readTPIDRURW());
     /* This register is read only from userlevel, but could still be updated
-     * if the thread is running in a higher priveleged level with a VCPU attached.
+     * if the thread is running in a higher privilege level with a VCPU attached.
      */
     setRegister(thread, TPIDRURO, readTPIDRURO());
 }
@@ -287,15 +292,6 @@ static inline void setKernelStack(word_t stack_address)
         writeHTPIDR(stack_address);
     } else {
         writeTPIDRPRW(stack_address);
-    }
-}
-
-static inline word_t getKernelStack(void)
-{
-    if (config_set(CONFIG_ARM_HYPERVISOR_SUPPORT)) {
-        return readHTPIDR();
-    } else {
-        return readTPIDRPRW();
     }
 }
 

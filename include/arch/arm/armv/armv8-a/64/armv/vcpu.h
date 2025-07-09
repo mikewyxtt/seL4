@@ -624,11 +624,26 @@ static inline void armv_vcpu_boot_init(void)
     /* set the SCTLR_EL1 for running native seL4 threads */
     MSR(REG_SCTLR_EL1, SCTLR_EL1_NATIVE);
     isb();
+
+#if defined(ARM_HYP_TRAP_CP14_IN_VCPU_THREADS) || defined(ARM_HYP_TRAP_CP14_IN_NATIVE_USER_THREADS)
+    initHDCR();
+#endif
 }
 
-static inline void armv_vcpu_save(vcpu_t *vcpu, UNUSED bool_t active)
+static inline void armv_vcpu_save(vcpu_t *vcpu, bool_t active)
 {
-    vcpu_save_reg_range(vcpu, seL4_VCPUReg_TTBR0, seL4_VCPUReg_SPSR_EL1);
+    /* If we aren't active then this state already got stored when we were disabled */
+    if (active) {
+        vcpu_save_reg(vcpu, seL4_VCPUReg_CPACR);
+    }
+    vcpu_save_reg_range(vcpu, seL4_VCPURegSaveRange_start, seL4_VCPURegSaveRange_end);
+
+#ifdef ARM_HYP_CP14_SAVE_AND_RESTORE_VCPU_THREADS
+    /* This is done when we are asked to save and restore the CP14 debug context
+     * of VCPU threads; the register context is saved into the underlying TCB.
+     */
+    saveAllBreakpointState(vcpu->vcpuTCB);
+#endif
 }
 
 static inline void vcpu_enable(vcpu_t *vcpu)
@@ -638,9 +653,14 @@ static inline void vcpu_enable(vcpu_t *vcpu)
     isb();
 
     set_gic_vcpu_ctrl_hcr(vcpu->vgic.hcr);
-#ifdef CONFIG_HAVE_FPU
-    vcpu_restore_reg(vcpu, seL4_VCPUReg_CPACR);
+#if !defined(ARM_CP14_SAVE_AND_RESTORE_NATIVE_THREADS) && defined(ARM_HYP_CP14_SAVE_AND_RESTORE_VCPU_THREADS)
+    restore_user_debug_context(vcpu->vcpuTCB);
 #endif
+#if defined(ARM_HYP_TRAP_CP14_IN_NATIVE_USER_THREADS)
+    setHDCRTrapDebugExceptionState(false);
+#endif
+
+    vcpu_restore_reg(vcpu, seL4_VCPUReg_CPACR);
     /* Restore virtual timer state */
     restore_virt_timer(vcpu);
 }
@@ -654,9 +674,7 @@ static inline void vcpu_disable(vcpu_t *vcpu)
         hcr = get_gic_vcpu_ctrl_hcr();
         vcpu->vgic.hcr = hcr;
         vcpu_save_reg(vcpu, seL4_VCPUReg_SCTLR);
-#ifdef CONFIG_HAVE_FPU
         vcpu_save_reg(vcpu, seL4_VCPUReg_CPACR);
-#endif
         isb();
     }
     /* Turn off the VGIC */
@@ -669,13 +687,18 @@ static inline void vcpu_disable(vcpu_t *vcpu)
     setHCR(HCR_NATIVE);
     isb();
 
-#ifdef CONFIG_HAVE_FPU
+#if defined(ARM_HYP_CP14_SAVE_AND_RESTORE_VCPU_THREADS)
+    loadAllDisabledBreakpointState();
+#endif
+#if defined(ARM_HYP_TRAP_CP14_IN_NATIVE_USER_THREADS)
+    setHDCRTrapDebugExceptionState(true);
+#endif
+
     /* Allow FPU instructions in EL0 and EL1 for native
      * threads by setting the CPACR_EL1. The CPTR_EL2 is
      * used to trap the FPU instructions to EL2.
      */
     enableFpuEL01();
-#endif
     if (likely(vcpu)) {
         /* Save virtual timer state */
         save_virt_timer(vcpu);
@@ -691,10 +714,15 @@ static inline void armv_vcpu_init(vcpu_t *vcpu)
 
 static inline bool_t armv_handleVCPUFault(word_t hsr)
 {
-#ifdef CONFIG_HAVE_FPU
     if ((ESR_EC(hsr) == ESR_EC_TFP || ESR_EC(hsr) == ESR_EC_CPACR) && !isFpuEnable()) {
         handleFPUFault();
         setNextPC(NODE_STATE(ksCurThread), getRestartPC(NODE_STATE(ksCurThread)));
+        return true;
+    }
+
+#ifdef CONFIG_HARDWARE_DEBUG_API
+    if (isDebugFault(hsr)) {
+        handleDebugFaultEvent(hsr);
         return true;
     }
 #endif
@@ -712,9 +740,10 @@ static inline bool_t vcpu_reg_saved_when_disabled(word_t field)
     switch (field) {
     case seL4_VCPUReg_SCTLR:
     case seL4_VCPUReg_CNTV_CTL:
-#ifdef CONFIG_HAVE_FPU
+    case seL4_VCPUReg_CNTV_CVAL:
+    case seL4_VCPUReg_CNTVOFF:
+    case seL4_VCPUReg_CNTKCTL_EL1:
     case seL4_VCPUReg_CPACR:
-#endif
         return true;
     default:
         return false;

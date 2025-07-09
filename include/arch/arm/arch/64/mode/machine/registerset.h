@@ -7,6 +7,7 @@
 #pragma once
 
 #include <config.h>
+#include <arch/machine/debug_conf.h>
 
 /* CurrentEL register */
 #define PEXPL1                  (1 << 2)
@@ -45,7 +46,7 @@
 #define ID_AA64PFR0_EL1_ASIMD   20     // HWCap for Advanced SIMD
 
 /* CPACR_EL1 register */
-#define CPACR_EL1_FPEN          20     // FP regiters access
+#define CPACR_EL1_FPEN          20     // FP registers access
 
 /*
  * We cannot allow async aborts in the verified kernel, but they are useful
@@ -142,9 +143,13 @@ enum _register {
     /* user readable/writable thread ID register.
      * name comes from the ARM manual */
     TPIDR_EL0                   = 35,
-    TLS_BASE                    = TPIDR_EL0,
     /* user readonly thread ID register. */
     TPIDRRO_EL0                 = 36,
+#ifdef CONFIG_ARM_TLS_REG_TPIDRU
+    TLS_BASE = TPIDR_EL0,
+#elif defined(CONFIG_ARM_TLS_REG_TPIDRURO)
+    TLS_BASE = TPIDRRO_EL0,
+#endif
     n_contextRegisters          = 37,
 };
 
@@ -232,6 +237,21 @@ extern const register_t msgRegisters[];
 extern const register_t frameRegisters[];
 extern const register_t gpRegisters[];
 
+#ifdef ARM_BASE_CP14_SAVE_AND_RESTORE
+typedef struct debug_register_pair {
+    word_t cr, vr;
+} debug_register_pair_t;
+
+typedef struct user_breakpoint_state {
+    /* We don't use context comparisons */
+    debug_register_pair_t breakpoint[seL4_NumExclusiveBreakpoints],
+                          watchpoint[seL4_NumExclusiveWatchpoints];
+    uint32_t used_breakpoints_bf;
+    word_t n_instructions;
+    bool_t single_step_enabled;
+} user_breakpoint_state_t;
+#endif /* ARM_BASE_CP14_SAVE_AND_RESTORE */
+
 #ifdef CONFIG_HAVE_FPU
 typedef struct user_fpu_state {
     uint64_t vregs[64];
@@ -250,6 +270,9 @@ typedef struct user_fpu_state {
  */
 struct user_context {
     word_t registers[n_contextRegisters];
+#ifdef ARM_BASE_CP14_SAVE_AND_RESTORE
+    user_breakpoint_state_t breakpointState;
+#endif /* ARM_BASE_CP14_SAVE_AND_RESTORE */
 #ifdef CONFIG_HAVE_FPU
     user_fpu_state_t fpuState;
 #endif /* CONFIG_HAVE_FPU */
@@ -260,9 +283,16 @@ unverified_compile_assert(registers_are_first_member_of_user_context,
                           OFFSETOF(user_context_t, registers) == 0)
 
 
+#ifdef ARM_BASE_CP14_SAVE_AND_RESTORE
+void Arch_initBreakpointContext(user_context_t *context);
+#endif
+
 static inline void Arch_initContext(user_context_t *context)
 {
     context->registers[SPSR_EL1] = PSTATE_USER;
+#ifdef ARM_BASE_CP14_SAVE_AND_RESTORE
+    Arch_initBreakpointContext(context);
+#endif
 }
 
 #endif /* !__ASSEMBLER__ */

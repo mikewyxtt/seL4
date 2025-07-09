@@ -23,7 +23,6 @@ void VISIBLE NORETURN restore_user_context(void)
 {
     word_t cur_thread_reg = (word_t) NODE_STATE(ksCurThread)->tcbArch.tcbContext.registers;
     c_exit_hook();
-    NODE_UNLOCK_IF_HELD;
 
 #ifdef ENABLE_SMP_SUPPORT
     word_t sp = read_sscratch();
@@ -37,12 +36,15 @@ void VISIBLE NORETURN restore_user_context(void)
     set_tcb_fs_state(NODE_STATE(ksCurThread), isFpuEnable());
 #endif
 
+    NODE_UNLOCK_IF_HELD;
+
     asm volatile(
         "mv t0, %[cur_thread]       \n"
         LOAD_S " ra, (0*%[REGSIZE])(t0)  \n"
         LOAD_S "  sp, (1*%[REGSIZE])(t0)  \n"
         LOAD_S "  gp, (2*%[REGSIZE])(t0)  \n"
-        /* skip tp/x4, t0/x5, t1/x6, they are restored later */
+        LOAD_S "  tp, (3*%[REGSIZE])(t0)  \n"
+        /* skip t0/x5, t1/x6, they are restored later */
         /* no-op store conditional to clear monitor state */
         /* this may succeed in implementations with very large reservations, but the saved ra is dead */
         "sc.w zero, zero, (t0)\n"
@@ -71,10 +73,6 @@ void VISIBLE NORETURN restore_user_context(void)
         LOAD_S "  t4, (28*%[REGSIZE])(t0) \n"
         LOAD_S "  t5, (29*%[REGSIZE])(t0) \n"
         LOAD_S "  t6, (30*%[REGSIZE])(t0) \n"
-        /* Get next restored tp */
-        LOAD_S "  t1, (3*%[REGSIZE])(t0)  \n"
-        /* get restored tp */
-        "add tp, t1, x0  \n"
         /* get sepc */
         LOAD_S "  t1, (34*%[REGSIZE])(t0)\n"
         "csrw sepc, t1  \n"
@@ -111,6 +109,15 @@ void VISIBLE NORETURN c_handle_interrupt(void)
 
 void VISIBLE NORETURN c_handle_exception(void)
 {
+#ifdef CONFIG_DEBUG_BUILD
+    if (read_sstatus() & SSTATUS_SPP) {
+        printf("\n\nKERNEL ABORT (exception within s-mode)!\n");
+        printf("scause: 0x%"SEL4_PRIx_word", stval: 0x%"SEL4_PRIx_word"\n",
+               read_scause(), read_stval());
+        halt();
+    }
+#endif
+
     NODE_LOCK_SYS;
 
     c_entry_hook();

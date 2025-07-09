@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: GPL-2.0-only
 #
 
-cmake_minimum_required(VERSION 3.8.2)
+cmake_minimum_required(VERSION 3.16.0)
 include(CheckCCompilerFlag)
 
 include(${CMAKE_CURRENT_LIST_DIR}/configs/seL4Config.cmake)
@@ -35,6 +35,7 @@ RequireTool(CONFIG_GEN_PATH config_gen.py)
 RequireTool(BF_GEN_PATH bitfield_gen.py)
 RequireTool(HARDWARE_GEN_PATH hardware_gen.py)
 RequireTool(INVOCATION_ID_GEN_PATH invocation_header_gen.py)
+RequireTool(INVOCATION_JSON_GEN_PATH invocation_json_gen.py)
 RequireTool(SYSCALL_ID_GEN_PATH syscall_header_gen.py)
 RequireTool(XMLLINT_PATH xmllint.sh)
 
@@ -308,6 +309,14 @@ else()
     message(FATAL_ERROR "unknown KernelArch '${KernelArch}'")
 endif()
 
+if(
+    (CMAKE_C_COMPILER_ID STREQUAL "Clang")
+    AND (CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL "20.0.0")
+)
+    # To avoid clang: error: argument unused during compilation: '-c'
+    add_compile_options(-Wno-unused-command-line-argument)
+endif()
+
 # Sort the C sources to ensure a stable layout of the final C file
 list(SORT c_sources)
 # Add the domain schedule now that its sorted
@@ -429,6 +438,37 @@ gen_invocation_header(
 )
 list(APPEND xml_headers "${header_dest}")
 list(APPEND gen_files_list "${header_dest}")
+
+get_absolute_source_or_binary(
+    invocations_absolute "${CMAKE_CURRENT_SOURCE_DIR}/libsel4/include/interfaces/object-api.xml"
+)
+get_absolute_source_or_binary(
+    arch_invocations_absolute
+    "${CMAKE_CURRENT_SOURCE_DIR}/libsel4/arch_include/${KernelArch}/interfaces/object-api-arch.xml"
+)
+get_absolute_source_or_binary(
+    sel4_arch_invocations_absolute
+    "${CMAKE_CURRENT_SOURCE_DIR}/libsel4/sel4_arch_include/${KernelSel4Arch}/interfaces/object-api-sel4-arch.xml"
+)
+
+add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/generated/invocations_all.json
+    COMMAND rm -f ${CMAKE_CURRENT_BINARY_DIR}/generated/invocations_all.json
+    COMMAND
+        "${PYTHON3}" "${INVOCATION_JSON_GEN_PATH}"
+        --gen_config ${CMAKE_CURRENT_BINARY_DIR}/gen_config/kernel/gen_config.json
+        --invocations "${invocations_absolute}"
+        --arch_invocations "${arch_invocations_absolute}"
+        --sel4_arch_invocations "${sel4_arch_invocations_absolute}"
+        --dest ${CMAKE_CURRENT_BINARY_DIR}/generated/invocations_all.json
+    DEPENDS
+        "${CMAKE_CURRENT_BINARY_DIR}/gen_config/kernel/gen_config.json"
+        "${INVOCATION_JSON_GEN_PATH}"
+        "${invocations_absolute}"
+        "${arch_invocations_absolute}"
+        "${sel4_arch_invocations_absolute}"
+)
+list(APPEND gen_files_list "generated/invocations_all.json")
 
 set(syscall_xml_base "${CMAKE_CURRENT_SOURCE_DIR}/libsel4/include/api")
 set(syscall_dest "gen_headers/arch/api/syscall.h")
@@ -701,16 +741,23 @@ if("${CMAKE_SOURCE_DIR}" STREQUAL "${CMAKE_CURRENT_SOURCE_DIR}")
     # Install kernel.elf to bin/kernel.elf
     install(TARGETS kernel.elf RUNTIME DESTINATION bin)
     # Install all libsel4 headers to libsel4/include
+    # If building for aarch32,hyp explicitly use aarch32 for sel4arch path
+    # otherwise the install command tries to install the arm_hyp symlink file
+    # instead of its realpath.
+    set(realpath_sel4arch "${KernelSel4Arch}")
+    if(KernelSel4ArchArmHyp)
+        set(realpath_sel4arch "aarch32")
+    endif()
     install(
         DIRECTORY
             "${CMAKE_CURRENT_SOURCE_DIR}/libsel4/include/"
             "${CMAKE_CURRENT_SOURCE_DIR}/libsel4/arch_include/${KernelArch}/"
-            "${CMAKE_CURRENT_SOURCE_DIR}/libsel4/sel4_arch_include/${KernelSel4Arch}/"
+            "${CMAKE_CURRENT_SOURCE_DIR}/libsel4/sel4_arch_include/${realpath_sel4arch}/"
             "${CMAKE_CURRENT_SOURCE_DIR}/libsel4/sel4_plat_include/${KernelPlatform}/"
             "${CMAKE_CURRENT_SOURCE_DIR}/libsel4/mode_include/${KernelWordSize}/"
             "${CMAKE_CURRENT_BINARY_DIR}/libsel4/include/"
             "${CMAKE_CURRENT_BINARY_DIR}/libsel4/arch_include/${KernelArch}/"
-            "${CMAKE_CURRENT_BINARY_DIR}/libsel4/sel4_arch_include/${KernelSel4Arch}/"
+            "${CMAKE_CURRENT_BINARY_DIR}/libsel4/sel4_arch_include/${realpath_sel4arch}/"
             # The following directories install the autoconf headers
             "${CMAKE_CURRENT_BINARY_DIR}/gen_config/"
             "${CMAKE_CURRENT_BINARY_DIR}/libsel4/gen_config/"
